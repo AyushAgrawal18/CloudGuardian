@@ -1,7 +1,9 @@
 
 import os
 import sqlite3
+from datetime import datetime
 from pathlib import Path
+from backend.app.core.config import THRESHOLDS, CRITICAL_MULTIPLIER
 
 from backend.app.schemas.metrics import AnomalyOut, HostStatusOut, MetricIn, MetricOut
 
@@ -11,14 +13,7 @@ class MetricsService:
         configured_path = os.getenv("CLOUDGUARDIAN_DB_PATH", "backend/cloudguardian.db")
         self._database_path = Path(configured_path)
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
-        self._thresholds = {
-            "cpu_percent": 85.0,
-            "memory_percent": 85.0,
-            "disk_percent": 90.0,
-            "latency_ms": 500.0,
-            "error_rate_percent": 5.0,
-            "network_rtt_ms": 250.0,
-        }
+        self._thresholds =  THRESHOLDS.copy()
         self._initialise_database()
 
     def _connect(self) -> sqlite3.Connection:
@@ -75,13 +70,44 @@ class MetricsService:
 
         return record
 
-    def get_recent(self, limit: int = 50) -> list[MetricOut]:
+    def get_recent(
+        self,
+        limit: int = 50,
+        host_id: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+    ) -> list[MetricOut]:
+        query = "SELECT * FROM metrics"
+        conditions = []
+        parameters = []
+
+        if host_id:
+            conditions.append("host_id = ?")
+            parameters.append(host_id)
+
+        if start_time:
+            conditions.append("timestamp >= ?")
+            parameters.append(start_time.isoformat())
+
+        if end_time:
+            conditions.append("timestamp <= ?")
+            parameters.append(end_time.isoformat())
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        query += " ORDER BY timestamp DESC, id DESC LIMIT ?"
+        parameters.append(limit)
+
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM metrics ORDER BY timestamp DESC, id DESC LIMIT ?",
-                (limit,),
+                query,
+                tuple(parameters),
             ).fetchall()
+            
         return [MetricOut(**dict(row)) for row in rows]
+    
+    
 
     def get_anomalies(self, limit: int = 50) -> list[AnomalyOut]:
         with self._connect() as connection:
@@ -124,7 +150,11 @@ class MetricsService:
             if actual_value < threshold:
                 continue
 
-            severity = "critical" if actual_value >= threshold * 1.15 else "warning"
+            severity = (
+                "critical"
+                if actual_value >= threshold * CRITICAL_MULTIPLIER
+                else "warning"
+            )
             connection.execute(
                 """
                 INSERT INTO anomalies (

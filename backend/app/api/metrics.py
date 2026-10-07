@@ -1,4 +1,6 @@
 
+from datetime import datetime
+
 from fastapi import APIRouter, Query
 
 from backend.app.schemas.metrics import AnomalyOut, HostStatusOut, MetricIn, MetricOut
@@ -18,8 +20,16 @@ def ingest_metric(metric: MetricIn):
 @router.get("", response_model=list[MetricOut])
 def get_metrics(
     limit: int = Query(default=50, ge=1, le=1000),
+    host_id: str | None = Query(default=None),
+    start_time: datetime | None = Query(default=None),
+    end_time: datetime | None = Query(default=None),
 ):
-    return metrics_service.get_recent(limit)
+    return metrics_service.get_recent(
+        limit=limit,
+        host_id=host_id,
+        start_time=start_time,
+        end_time=end_time,
+    )
 
 
 @router.get("/anomalies", response_model=list[AnomalyOut])
