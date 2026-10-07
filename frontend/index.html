@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CloudGuardian Dashboard</title>
+  <style>
+    :root { color-scheme: light; font-family: Segoe UI, sans-serif; color: #172033; background: #f4f7fb; }
+    body { margin: 0; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px 20px; }
+    header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+    h1 { margin: 0; font-size: 28px; }
+    .muted { color: #64748b; }
+    section { background: white; border: 1px solid #dce3ee; border-radius: 8px; padding: 20px; margin-top: 20px; box-shadow: 0 4px 14px #1720330d; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    label { display: grid; gap: 6px; font-size: 13px; color: #475569; }
+    input { width: 100%; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 5px; padding: 9px; font: inherit; }
+    button { margin-top: 16px; border: 0; border-radius: 5px; padding: 10px 16px; color: white; background: #1769aa; cursor: pointer; font: inherit; }
+    button:hover { background: #125486; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+    .card { border-left: 4px solid #22a06b; padding: 12px; background: #f8fafc; }
+    .warning { border-color: #d99000; }
+    .critical { border-color: #d64545; }
+    .card strong { display: block; font-size: 20px; text-transform: capitalize; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
+    .error { color: #b42318; }
+    @media (max-width: 600px) { header { display: block; } th:nth-child(3), td:nth-child(3) { display: none; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>CloudGuardian</h1>
+        <p class="muted">Basic infrastructure health monitor</p>
+      </div>
+      <span id="updated" class="muted">Loading...</span>
+    </header>
+
+    <section>
+      <h2>Submit metrics</h2>
+      <form id="metric-form" class="grid">
+        <label>Host ID<input name="host_id" value="host-1" required></label>
+        <label>CPU %<input name="cpu_percent" type="number" min="0" max="100" value="35" required></label>
+        <label>Memory %<input name="memory_percent" type="number" min="0" max="100" value="40" required></label>
+        <label>Disk %<input name="disk_percent" type="number" min="0" max="100" value="45" required></label>
+        <label>Latency ms<input name="latency_ms" type="number" min="0" value="80" required></label>
+        <label>Error rate %<input name="error_rate_percent" type="number" min="0" max="100" value="0.5" required></label>
+        <label>Connections<input name="active_connections" type="number" min="0" value="20" required></label>
+        <label>Request rate<input name="request_rate" type="number" min="0" value="100" required></label>
+        <label>Network RTT ms<input name="network_rtt_ms" type="number" min="0" value="25" required></label>
+        <button type="submit">Save metrics</button>
+      </form>
+      <p id="form-message" class="muted"></p>
+    </section>
+
+    <section>
+      <h2>Hosts</h2>
+      <div id="hosts" class="cards"><p class="muted">No metrics submitted yet.</p></div>
+    </section>
+
+    <section>
+      <h2>Recent anomalies</h2>
+      <p id="anomaly-error" class="error"></p>
+      <table>
+        <thead><tr><th>Host</th><th>Metric</th><th>Value / limit</th><th>Severity</th><th>Explanation</th></tr></thead>
+        <tbody id="anomalies"><tr><td colspan="5" class="muted">No anomalies recorded.</td></tr></tbody>
+      </table>
+    </section>
+  </main>
+  <script>
+    const api = "/api/v1/metrics";
+    const form = document.querySelector("#metric-form");
+    const message = document.querySelector("#form-message");
+
+    function numberFields(data) {
+      for (const key of Object.keys(data)) {
+        if (key !== "host_id") data[key] = Number(data[key]);
+      }
+      return data;
+    }
+
+    async function refresh() {
+      const [hostsResponse, anomaliesResponse] = await Promise.all([
+        fetch(`${api}/hosts`), fetch(`${api}/anomalies?limit=20`)
+      ]);
+      if (!hostsResponse.ok || !anomaliesResponse.ok) throw new Error("API unavailable");
+      const hosts = await hostsResponse.json();
+      const anomalies = await anomaliesResponse.json();
+      document.querySelector("#hosts").innerHTML = hosts.length ? hosts.map(host => `
+        <div class="card ${host.status}"><span>${host.host_id}</span><strong>${host.status}</strong>
+        <span>${host.anomaly_count} anomaly record(s)</span></div>`).join("") : '<p class="muted">No metrics submitted yet.</p>';
+      document.querySelector("#anomalies").innerHTML = anomalies.length ? anomalies.map(item => `
+        <tr><td>${item.host_id}</td><td>${item.metric_name}</td><td>${item.actual_value} / ${item.threshold}</td>
+        <td>${item.severity}</td><td>${item.explanation}</td></tr>`).join("") : '<tr><td colspan="5" class="muted">No anomalies recorded.</td></tr>';
+      document.querySelector("#updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
+    }
+
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      message.textContent = "Saving...";
+      const data = numberFields(Object.fromEntries(new FormData(form)));
+      const response = await fetch(api, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+      message.textContent = response.ok ? "Metrics saved." : "Could not save metrics.";
+      if (response.ok) await refresh();
+    });
+
+    refresh().catch(() => { document.querySelector("#anomaly-error").textContent = "The backend is unavailable. Start the API and reload this page."; });
+  </script>
+</body>
+</html>

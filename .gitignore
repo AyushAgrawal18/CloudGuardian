@@ -13,6 +13,7 @@ data/synthetic/
 *.pt
 *.pth
 *.onnx
+*.db
 .vscode/
 .idea/
 .DS_Store

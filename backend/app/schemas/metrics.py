@@ -25,3 +25,22 @@ class MetricIn(BaseModel):
 
 class MetricOut(MetricIn):
     id: int
+
+
+class AnomalyOut(BaseModel):
+    id: int
+    metric_id: int
+    host_id: str
+    timestamp: datetime
+    metric_name: str
+    actual_value: float
+    threshold: float
+    severity: str
+    explanation: str
+
+
+class HostStatusOut(BaseModel):
+    host_id: str
+    status: str
+    latest_metric_timestamp: datetime | None = None
+    anomaly_count: int
