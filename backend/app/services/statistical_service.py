@@ -55,5 +55,17 @@ class StatisticalService:
             "is_anomaly": is_anomaly,
         }
 
+    def restore_history(
+        self,
+        host_id: str,
+        metric_name: str,
+        values: list[float],
+    ) -> None:
+        key = (host_id, metric_name)
+
+        self._history[key] = deque(
+            values[-self.window_size:],
+            maxlen=self.window_size,
+        )
 
 statistical_service = StatisticalService()

@@ -15,7 +15,9 @@ class MetricsService:
         self._database_path = Path(configured_path)
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         self._thresholds =  THRESHOLDS.copy()
+        self._statistical_window_size = statistical_service.window_size
         self._initialise_database()
+        self._restore_statistical_history()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._database_path)
@@ -53,6 +55,42 @@ class MetricsService:
                 );
                 """
             )
+            
+    def _restore_statistical_history(self) -> None:
+        metric_names = list(self._thresholds.keys())
+
+        columns = ", ".join(
+            f'"{metric_name}"' for metric_name in metric_names
+        )
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT host_id, {columns}
+                FROM metrics
+                ORDER BY timestamp DESC, id DESC
+                """
+            ).fetchall()
+
+        host_ids = {row["host_id"] for row in rows}
+
+        for host_id in host_ids:
+            host_rows = [
+                row for row in rows
+                if row["host_id"] == host_id
+            ]
+
+            for metric_name in metric_names:
+                values = [
+                    float(row[metric_name])
+                    for row in reversed(host_rows[:self._statistical_window_size])
+                ]
+
+                statistical_service.restore_history(
+                    host_id=host_id,
+                    metric_name=metric_name,
+                    values=values,
+                )
 
     def add_metric(self, metric: MetricIn) -> MetricOut:
         values = metric.model_dump()
