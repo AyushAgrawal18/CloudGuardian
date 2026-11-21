@@ -1,89 +1,51 @@
 
-import os
-import sqlite3
 from datetime import datetime
-from pathlib import Path
-from backend.app.core.config import THRESHOLDS, CRITICAL_MULTIPLIER
-from backend.app.services.statistical_service import statistical_service
 
-from backend.app.schemas.metrics import AnomalyOut, HostStatusOut, MetricIn, MetricOut
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from backend.app.core.config import THRESHOLDS, CRITICAL_MULTIPLIER
+from backend.app.database import SessionLocal
+from backend.app.models import Metric, Anomaly
+from backend.app.schemas.metrics import (
+    AnomalyOut,
+    HostStatusOut,
+    MetricIn,
+    MetricOut,
+)
+from backend.app.services.statistical_service import statistical_service
 
 
 class MetricsService:
     def __init__(self):
-        configured_path = os.getenv("CLOUDGUARDIAN_DB_PATH", "backend/cloudguardian.db")
-        self._database_path = Path(configured_path)
-        self._database_path.parent.mkdir(parents=True, exist_ok=True)
-        self._thresholds =  THRESHOLDS.copy()
+        self._thresholds = THRESHOLDS.copy()
         self._statistical_window_size = statistical_service.window_size
-        self._initialise_database()
+
         self._restore_statistical_history()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._database_path)
-        connection.row_factory = sqlite3.Row
-        return connection
-
-    def _initialise_database(self) -> None:
-        with self._connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS metrics (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    host_id TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    cpu_percent REAL NOT NULL,
-                    memory_percent REAL NOT NULL,
-                    disk_percent REAL NOT NULL,
-                    latency_ms REAL NOT NULL,
-                    error_rate_percent REAL NOT NULL,
-                    active_connections INTEGER NOT NULL,
-                    request_rate REAL NOT NULL,
-                    network_rtt_ms REAL NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS anomalies (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    metric_id INTEGER NOT NULL,
-                    host_id TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    metric_name TEXT NOT NULL,
-                    actual_value REAL NOT NULL,
-                    threshold REAL NOT NULL,
-                    severity TEXT NOT NULL,
-                    explanation TEXT NOT NULL,
-                    FOREIGN KEY(metric_id) REFERENCES metrics(id)
-                );
-                """
-            )
-            
     def _restore_statistical_history(self) -> None:
         metric_names = list(self._thresholds.keys())
 
-        columns = ", ".join(
-            f'"{metric_name}"' for metric_name in metric_names
-        )
+        with SessionLocal() as db:
+            rows = db.scalars(
+                select(Metric).order_by(
+                    Metric.timestamp.desc(),
+                    Metric.id.desc(),
+                )
+            ).all()
 
-        with self._connect() as connection:
-            rows = connection.execute(
-                f"""
-                SELECT host_id, {columns}
-                FROM metrics
-                ORDER BY timestamp DESC, id DESC
-                """
-            ).fetchall()
+        host_rows = {}
 
-        host_ids = {row["host_id"] for row in rows}
+        for row in rows:
+            host_rows.setdefault(row.host_id, []).append(row)
 
-        for host_id in host_ids:
-            host_rows = [
-                row for row in rows
-                if row["host_id"] == host_id
-            ]
+        for host_id, records in host_rows.items():
+            latest_records = records[:self._statistical_window_size]
 
             for metric_name in metric_names:
                 values = [
-                    float(row[metric_name])
-                    for row in reversed(host_rows[:self._statistical_window_size])
+                    float(getattr(row, metric_name))
+                    for row in reversed(latest_records)
                 ]
 
                 statistical_service.restore_history(
@@ -92,22 +54,33 @@ class MetricsService:
                     values=values,
                 )
 
+    def _metric_out(self, record: Metric) -> MetricOut:
+        return MetricOut(
+            id=record.id,
+            host_id=record.host_id,
+            timestamp=record.timestamp,
+            cpu_percent=record.cpu_percent,
+            memory_percent=record.memory_percent,
+            disk_percent=record.disk_percent,
+            latency_ms=record.latency_ms,
+            error_rate_percent=record.error_rate_percent,
+            active_connections=record.active_connections,
+            request_rate=record.request_rate,
+            network_rtt_ms=record.network_rtt_ms,
+        )
+
     def add_metric(self, metric: MetricIn) -> MetricOut:
-        values = metric.model_dump()
-        values["timestamp"] = values["timestamp"].isoformat()
-        columns = ", ".join(values)
-        placeholders = ", ".join("?" for _ in values)
+        with SessionLocal.begin() as db:
+            record = Metric(**metric.model_dump())
 
-        with self._connect() as connection:
-            cursor = connection.execute(
-                f"INSERT INTO metrics ({columns}) VALUES ({placeholders})",
-                tuple(values.values()),
-            )
-            metric_id = cursor.lastrowid
-            record = MetricOut(id=metric_id, **metric.model_dump())
-            self._create_anomalies(connection, record)
+            db.add(record)
+            db.flush()
 
-        return record
+            metric_out = self._metric_out(record)
+
+            self._create_anomalies(db, metric_out)
+
+        return metric_out
 
     def get_recent(
         self,
@@ -116,74 +89,99 @@ class MetricsService:
         start_time: datetime | None = None,
         end_time: datetime | None = None,
     ) -> list[MetricOut]:
-        query = "SELECT * FROM metrics"
-        conditions = []
-        parameters = []
 
-        if host_id:
-            conditions.append("host_id = ?")
-            parameters.append(host_id)
+        with SessionLocal() as db:
+            query = select(Metric)
 
-        if start_time:
-            conditions.append("timestamp >= ?")
-            parameters.append(start_time.isoformat())
+            if host_id:
+                query = query.where(Metric.host_id == host_id)
 
-        if end_time:
-            conditions.append("timestamp <= ?")
-            parameters.append(end_time.isoformat())
+            if start_time:
+                query = query.where(Metric.timestamp >= start_time)
 
-        if conditions:
-            query += " WHERE " + " AND ".join(conditions)
+            if end_time:
+                query = query.where(Metric.timestamp <= end_time)
 
-        query += " ORDER BY timestamp DESC, id DESC LIMIT ?"
-        parameters.append(limit)
+            query = query.order_by(
+                Metric.timestamp.desc(),
+                Metric.id.desc(),
+            ).limit(limit)
 
-        with self._connect() as connection:
-            rows = connection.execute(
-                query,
-                tuple(parameters),
-            ).fetchall()
-            
-        return [MetricOut(**dict(row)) for row in rows]
-    
-    
+            records = db.scalars(query).all()
+
+            return [
+                self._metric_out(record)
+                for record in records
+            ]
 
     def get_anomalies(self, limit: int = 50) -> list[AnomalyOut]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM anomalies ORDER BY timestamp DESC, id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        return [AnomalyOut(**dict(row)) for row in rows]
+        with SessionLocal() as db:
+            records = db.scalars(
+                select(Anomaly)
+                .order_by(
+                    Anomaly.timestamp.desc(),
+                    Anomaly.id.desc(),
+                )
+                .limit(limit)
+            ).all()
+
+            return [
+                AnomalyOut(
+                    id=record.id,
+                    metric_id=record.metric_id,
+                    host_id=record.host_id,
+                    timestamp=record.timestamp,
+                    metric_name=record.metric_name,
+                    actual_value=record.actual_value,
+                    threshold=record.threshold,
+                    severity=record.severity,
+                    explanation=record.explanation,
+                )
+                for record in records
+            ]
 
     def get_host_statuses(self) -> list[HostStatusOut]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                  SELECT metrics.host_id, MAX(metrics.timestamp) AS latest_metric_timestamp,
-                       COUNT(anomalies.id) AS anomaly_count
-                FROM metrics
-                LEFT JOIN anomalies ON anomalies.metric_id = metrics.id
-                GROUP BY metrics.host_id
-                ORDER BY metrics.host_id
-                """
-            ).fetchall()
-
-        return [
-            HostStatusOut(
-                host_id=row["host_id"],
-                status=("critical" if row["anomaly_count"] >= 3 else "warning" if row["anomaly_count"] else "healthy"),
-                latest_metric_timestamp=row["latest_metric_timestamp"],
-                anomaly_count=row["anomaly_count"],
+        with SessionLocal() as db:
+            query = (
+                select(
+                    Metric.host_id,
+                    func.max(Metric.timestamp).label(
+                        "latest_metric_timestamp"
+                    ),
+                    func.count(Anomaly.id).label("anomaly_count"),
+                )
+                .outerjoin(
+                    Anomaly,
+                    Anomaly.metric_id == Metric.id,
+                )
+                .group_by(Metric.host_id)
+                .order_by(Metric.host_id)
             )
-            for row in rows
-        ]
+
+            rows = db.execute(query).all()
+
+            return [
+                HostStatusOut(
+                    host_id=row.host_id,
+                    status=(
+                        "critical"
+                        if row.anomaly_count >= 3
+                        else "warning"
+                        if row.anomaly_count
+                        else "healthy"
+                    ),
+                    latest_metric_timestamp=row.latest_metric_timestamp,
+                    anomaly_count=row.anomaly_count,
+                )
+                for row in rows
+            ]
 
     def _create_anomalies(
         self,
-        connection: sqlite3.Connection,
+        db: Session,
         record: MetricOut,
     ) -> None:
+
         # 1. Threshold-based anomaly detection
         for metric_name, threshold in self._thresholds.items():
             actual_value = getattr(record, metric_name)
@@ -197,24 +195,24 @@ class MetricsService:
                 else "warning"
             )
 
-            connection.execute(
-                """
-                INSERT INTO anomalies (
-                    metric_id, host_id, timestamp, metric_name, actual_value,
-                    threshold, severity, explanation
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record.id,
-                    record.host_id,
-                    record.timestamp.isoformat(),
-                    metric_name,
-                    actual_value,
-                    threshold,
-                    severity,
-                    f"{metric_name} reached {actual_value}, above the configured threshold of {threshold}",
-                ),
+            db.add(
+                Anomaly(
+                    metric_id=record.id,
+                    host_id=record.host_id,
+                    timestamp=record.timestamp,
+                    metric_name=metric_name,
+                    actual_value=actual_value,
+                    threshold=threshold,
+                    severity=severity,
+                    explanation=(
+                        f"{metric_name} reached {actual_value}, "
+                        f"above the configured threshold of {threshold}"
+                    ),
+                )
             )
+
+        # Flush threshold anomalies so they can be queried below.
+        db.flush()
 
         # 2. Statistical anomaly detection
         for metric_name in self._thresholds:
@@ -246,50 +244,30 @@ class MetricsService:
                 f"z-score {result['z_score']}"
             )
 
-            # Check whether threshold detection already created an anomaly.
-            existing_anomaly = connection.execute(
-                """
-                SELECT id, explanation
-                FROM anomalies
-                WHERE metric_id = ? AND metric_name = ?
-                """,
-                (record.id, metric_name),
-            ).fetchone()
+            existing_anomaly = db.scalars(
+                select(Anomaly).where(
+                    Anomaly.metric_id == record.id,
+                    Anomaly.metric_name == metric_name,
+                )
+            ).first()
 
             if existing_anomaly:
-                # Combine both detection explanations into one record.
-                connection.execute(
-                    """
-                    UPDATE anomalies
-                    SET explanation = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        existing_anomaly["explanation"]
-                        + "; "
-                        + statistical_explanation,
-                        existing_anomaly["id"],
-                    ),
+                existing_anomaly.explanation += (
+                    "; " + statistical_explanation
                 )
             else:
-                # Insert a separate statistical anomaly.
-                connection.execute(
-                    """
-                    INSERT INTO anomalies (
-                        metric_id, host_id, timestamp, metric_name,
-                        actual_value, threshold, severity, explanation
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        record.id,
-                        record.host_id,
-                        record.timestamp.isoformat(),
-                        metric_name,
-                        actual_value,
-                        statistical_boundary,
-                        "warning",
-                        statistical_explanation,
-                    ),
+                db.add(
+                    Anomaly(
+                        metric_id=record.id,
+                        host_id=record.host_id,
+                        timestamp=record.timestamp,
+                        metric_name=metric_name,
+                        actual_value=actual_value,
+                        threshold=statistical_boundary,
+                        severity="warning",
+                        explanation=statistical_explanation,
+                    )
                 )
+
 
 metrics_service = MetricsService()
