@@ -1,12 +1,21 @@
+
 from fastapi.testclient import TestClient
 
 from backend.app import main
 from backend.app.api import metrics as metrics_api
+from backend.app.core.jwt import create_access_token
+from backend.app.core.security import hash_password
+from backend.app.database import get_db
+from backend.app.models.user import User, UserRole
 from backend.app.services.metrics_service import MetricsService
 
 
 def test_metric_service_persists_and_detects_anomaly(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLOUDGUARDIAN_DB_PATH", str(tmp_path / "cloudguardian.db"))
+    monkeypatch.setenv(
+        "CLOUDGUARDIAN_DB_PATH",
+        str(tmp_path / "cloudguardian.db"),
+    )
+
     service = MetricsService()
     service.add_metric(
         metrics_api.MetricIn(
@@ -27,9 +36,9 @@ def test_metric_service_persists_and_detects_anomaly(tmp_path, monkeypatch):
     assert service.get_host_statuses()[0].status == "warning"
 
 
-def test_api_accepts_metrics_and_serves_dashboard(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLOUDGUARDIAN_DB_PATH", str(tmp_path / "cloudguardian.db"))
+def test_api_accepts_metrics_and_serves_dashboard(isolated_database):
     metrics_api.metrics_service = MetricsService()
+
     payload = {
         "host_id": "host-1",
         "cpu_percent": 95,
@@ -42,11 +51,69 @@ def test_api_accepts_metrics_and_serves_dashboard(tmp_path, monkeypatch):
         "network_rtt_ms": 25,
     }
 
-    with TestClient(main.app) as client:
-        response = client.post("/api/v1/metrics", json=payload)
+    # Create an OPERATOR in the isolated test database.
+    with isolated_database() as db:
+        operator = User(
+            email="operator@test.com",
+            full_name="Test Operator",
+            hashed_password=hash_password("TestPassword@123"),
+            role=UserRole.OPERATOR,
+            is_active=True,
+        )
 
-        assert response.status_code == 201
-        assert len(client.get("/api/v1/metrics").json()) == 1
-        assert len(client.get("/api/v1/metrics/anomalies").json()) == 1
-        assert client.get("/api/v1/metrics/hosts").json()[0]["status"] == "warning"
-        assert client.get("/dashboard/").status_code == 200
+        db.add(operator)
+        db.commit()
+        db.refresh(operator)
+
+        token = create_access_token(subject=str(operator.id))
+
+    # Override the database dependency for this test.
+    def override_get_db():
+        db = isolated_database()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    main.app.dependency_overrides[get_db] = override_get_db
+
+    headers = {
+        "Authorization": f"Bearer {token}"
+    }
+
+    try:
+        with TestClient(main.app) as client:
+            response = client.post(
+                "/api/v1/metrics",
+                json=payload,
+                headers=headers,
+            )
+
+            assert response.status_code == 201
+
+            metrics_response = client.get(
+                "/api/v1/metrics",
+                headers=headers,
+            )
+
+            assert metrics_response.status_code == 200
+            assert len(metrics_response.json()) == 1
+
+            anomalies_response = client.get(
+                "/api/v1/metrics/anomalies",
+                headers=headers,
+            )
+
+            assert len(anomalies_response.json()) == 1
+
+            hosts_response = client.get(
+                "/api/v1/metrics/hosts",
+                headers=headers,
+            )
+
+            assert hosts_response.json()[0]["status"] == "warning"
+
+            assert client.get("/dashboard/").status_code == 200
+
+    finally:
+        main.app.dependency_overrides.pop(get_db, None)
