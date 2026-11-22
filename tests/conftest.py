@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app.database import Base
+from backend.app.models import Metric, Anomaly, User
 from backend.app.services import metrics_service as metrics_module
 from backend.app.services.statistical_service import StatisticalService
 
@@ -38,6 +39,6 @@ def isolated_database(monkeypatch):
         StatisticalService(window_size=20),
     )
 
-    yield
+    yield TestingSessionLocal
 
     engine.dispose()
