@@ -8,15 +8,28 @@ from backend.app.core.security import hash_password
 from backend.app.database import get_db
 from backend.app.models.user import User, UserRole
 from backend.app.services.metrics_service import MetricsService
+from backend.app.models.host import Host, HostStatus
 
 
-def test_metric_service_persists_and_detects_anomaly(tmp_path, monkeypatch):
-    monkeypatch.setenv(
-        "CLOUDGUARDIAN_DB_PATH",
-        str(tmp_path / "cloudguardian.db"),
-    )
+
+def test_metric_service_persists_and_detects_anomaly(isolated_database):
+    # Register host in the isolated test database first.
+    with isolated_database() as db:
+        host = Host(
+            host_id="host-1",
+            name="Test Server",
+            hostname="test-server",
+            ip_address="192.168.1.10",
+            environment="testing",
+            operating_system="Ubuntu 24.04",
+            status=HostStatus.ACTIVE,
+        )
+
+        db.add(host)
+        db.commit()
 
     service = MetricsService()
+
     service.add_metric(
         metrics_api.MetricIn(
             host_id="host-1",
@@ -62,6 +75,18 @@ def test_api_accepts_metrics_and_serves_dashboard(isolated_database):
         )
 
         db.add(operator)
+
+        host = Host(
+            host_id="host-1",
+            name="Test Server",
+            hostname="test-server",
+            ip_address="192.168.1.10",
+            environment="testing",
+            operating_system="Ubuntu 24.04",
+            status=HostStatus.ACTIVE,
+        )
+
+        db.add(host)
         db.commit()
         db.refresh(operator)
 

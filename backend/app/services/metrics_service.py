@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.config import THRESHOLDS, CRITICAL_MULTIPLIER
 from backend.app.database import SessionLocal
-from backend.app.models import Metric, Anomaly
+from backend.app.models import Metric, Anomaly, Host, HostStatus
 from backend.app.schemas.metrics import (
     AnomalyOut,
     HostStatusOut,
@@ -14,6 +14,13 @@ from backend.app.schemas.metrics import (
     MetricOut,
 )
 from backend.app.services.statistical_service import statistical_service
+
+class HostNotRegisteredError(Exception):
+    pass
+
+
+class HostNotActiveError(Exception):
+    pass
 
 
 class MetricsService:
@@ -71,6 +78,26 @@ class MetricsService:
 
     def add_metric(self, metric: MetricIn) -> MetricOut:
         with SessionLocal.begin() as db:
+
+            # Validate host registration
+            host = db.scalar(
+                select(Host).where(
+                    Host.host_id == metric.host_id
+                )
+            )
+
+            if host is None:
+                raise HostNotRegisteredError(
+                    f"Host '{metric.host_id}' is not registered"
+                )
+
+            # Only active hosts can submit metrics
+            if host.status != HostStatus.ACTIVE:
+                raise HostNotActiveError(
+                    f"Host '{metric.host_id}' is not active"
+                )
+
+            # Store metric
             record = Metric(**metric.model_dump())
 
             db.add(record)
@@ -78,6 +105,7 @@ class MetricsService:
 
             metric_out = self._metric_out(record)
 
+            # Existing anomaly detection
             self._create_anomalies(db, metric_out)
 
         return metric_out

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from backend.app.services.metrics_service import MetricsService
 from backend.app.schemas.metrics import MetricIn
 from backend.app.services.statistical_service import StatisticalService
+from backend.app.models.host import Host, HostStatus
 
 
 def create_metric(cpu: float) -> MetricIn:
@@ -20,9 +21,26 @@ def create_metric(cpu: float) -> MetricIn:
         network_rtt_ms=20.0,
     )
 
+def register_test_host(isolated_database):
+    with isolated_database() as db:
+        host = Host(
+            host_id="integration-host",
+            name="Integration Test Server",
+            hostname="integration-server",
+            ip_address="192.168.1.30",
+            environment="testing",
+            operating_system="Ubuntu 24.04",
+            status=HostStatus.ACTIVE,
+        )
 
-def test_statistical_anomaly_is_saved():
+        db.add(host)
+        db.commit()
+
+
+def test_statistical_anomaly_is_saved(isolated_database):
     import backend.app.services.metrics_service as metrics_module
+
+    register_test_host(isolated_database)
 
     metrics_module.statistical_service = StatisticalService(window_size=20)
 
@@ -41,8 +59,10 @@ def test_statistical_anomaly_is_saved():
     assert "statistically unusual" in anomalies[0].explanation
 
 
-def test_combines_threshold_and_statistical_detection():
+def test_combines_threshold_and_statistical_detection(isolated_database):
     import backend.app.services.metrics_service as metrics_module
+
+    register_test_host(isolated_database)
 
     metrics_module.statistical_service = StatisticalService(window_size=20)
 
@@ -62,8 +82,10 @@ def test_combines_threshold_and_statistical_detection():
     assert anomalies[0].severity == "critical"
 
 
-def test_statistical_history_survives_service_restart():
+def test_statistical_history_survives_service_restart(isolated_database):
     import backend.app.services.metrics_service as metrics_module
+
+    register_test_host(isolated_database)
 
     metrics_module.statistical_service = StatisticalService(window_size=20)
 

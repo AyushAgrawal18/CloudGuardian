@@ -7,6 +7,7 @@ from backend.app.core.jwt import create_access_token
 from backend.app.core.security import hash_password
 from backend.app.database import get_db
 from backend.app.models.user import User, UserRole
+from backend.app.models.host import Host, HostStatus
 
 
 @pytest.fixture
@@ -91,10 +92,26 @@ def test_viewer_can_read_metrics_but_cannot_ingest(client_with_role):
 )
 def test_operator_and_admin_can_ingest_metrics(
     client_with_role,
+    isolated_database,
     role,
 ):
     client, create_token = client_with_role
     headers = create_token(role)
+
+    # Register the host before metric ingestion.
+    with isolated_database() as db:
+        host = Host(
+            host_id="rbac-host",
+            name="RBAC Test Server",
+            hostname="rbac-server",
+            ip_address="192.168.1.20",
+            environment="testing",
+            operating_system="Ubuntu 24.04",
+            status=HostStatus.ACTIVE,
+        )
+
+        db.add(host)
+        db.commit()
 
     response = client.post(
         "/api/v1/metrics",
@@ -103,6 +120,7 @@ def test_operator_and_admin_can_ingest_metrics(
     )
 
     assert response.status_code == 201
+
 
 
 def test_metrics_rejects_invalid_token(client_with_role):

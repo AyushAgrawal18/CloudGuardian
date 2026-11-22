@@ -11,8 +11,13 @@ from backend.app.schemas.metrics import (
     MetricIn,
     MetricOut,
 )
-from backend.app.services.metrics_service import metrics_service
+from fastapi import HTTPException, status
 
+from backend.app.services.metrics_service import (
+    metrics_service,
+    HostNotRegisteredError,
+    HostNotActiveError,
+)
 
 router = APIRouter(
     prefix="/api/v1/metrics",
@@ -31,8 +36,20 @@ def ingest_metric(
         require_roles(UserRole.ADMIN, UserRole.OPERATOR)
     ),
 ):
-    return metrics_service.add_metric(metric)
+    try:
+        return metrics_service.add_metric(metric)
 
+    except HostNotRegisteredError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(error),
+        ) from error
+
+    except HostNotActiveError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
 
 @router.get("", response_model=list[MetricOut])
 def get_metrics(
