@@ -17,3 +17,5 @@ data/synthetic/
 .vscode/
 .idea/
 .DS_Store
+# Drain3 runtime persistence
+backend/data/drain3/

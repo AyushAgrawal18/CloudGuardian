@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.app.api.metrics import router as metrics_router
 from backend.app.api.auth import router as auth_router
 from backend.app.api.hosts import router as hosts_router
+from backend.app.api.logs import router as logs_router
 
 
 app = FastAPI(
@@ -28,6 +29,7 @@ def health_check():
 app.include_router(metrics_router)
 app.include_router(auth_router)
 app.include_router(hosts_router)
+app.include_router(logs_router)
 
 
 frontend_directory = Path(__file__).resolve().parents[2] / "frontend"

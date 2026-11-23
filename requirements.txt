@@ -10,6 +10,7 @@ pwdlib[argon2]
 email-validator
 PyJWT[crypto]
 psutil==7.2.2
+drain3
 
 # Database
 sqlalchemy==2.0.36

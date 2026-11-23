@@ -7,6 +7,7 @@ from sqlalchemy import engine_from_config, pool
 from dotenv import load_dotenv
 
 from backend.app.database import Base
+from backend.app.models.logs import LogTemplate, LogEvent
 from backend.app.models import Metric, Anomaly, User, UserRole
 
 load_dotenv()
