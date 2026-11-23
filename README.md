@@ -1,83 +1,136 @@
 # CloudGuardian
 
-CloudGuardian is an infrastructure health monitoring and anomaly detection platform built with FastAPI and PostgreSQL. It collects server metrics, monitors registered hosts, detects threshold-based and statistical anomalies, and provides APIs for infrastructure management with JWT authentication and role-based access control.
+CloudGuardian is an infrastructure monitoring system that collects server metrics, detects anomalies, manages registered hosts, and displays infrastructure health through a web dashboard.
 
-## Run locally
+It includes a FastAPI backend, PostgreSQL persistence, JWT authentication, role-based access control, and a Python monitoring agent with persistent offline metric buffering.
 
-From the repository root:
+## Features
+
+- **System Monitoring:** Collect CPU, memory, disk, and network metrics using a Python agent.
+- **Metric Ingestion:** REST APIs for storing and retrieving host metrics.
+- **Anomaly Detection:** Threshold-based and statistical anomaly detection.
+- **Host Management:** Register, inspect, update, and deactivate monitored hosts.
+- **Authentication:** JWT-based authentication with ADMIN, OPERATOR, and VIEWER roles.
+- **Dashboard:** Authenticated dashboard with host health, recent anomalies, and automatic refresh.
+- **Offline Buffering:** SQLite-backed metric queue that retains pending metrics during backend outages and delivers them after recovery.
+- **Database:** PostgreSQL with SQLAlchemy and Alembic migrations.
+- **Testing:** Automated backend and monitoring-agent tests.
+
+## Tech Stack
+
+- **Backend:** Python, FastAPI, SQLAlchemy, Pydantic
+- **Database:** PostgreSQL, SQLite
+- **Authentication:** JWT, Argon2
+- **Monitoring:** psutil, HTTPX
+- **Frontend:** HTML, CSS, JavaScript
+- **Migrations:** Alembic
+- **Testing:** Pytest, HTTPX
+
+## Run Locally
+
+Create and activate a virtual environment, then install dependencies:
 
 ```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 & ".\.venv\Scripts\python.exe" -m pip install -r requirements.txt
 ```
 
-Create a `.env` file in the project root:
+Configure the required environment variables in `.env`, including the PostgreSQL `DATABASE_URL` and JWT settings.
 
-```env
-DATABASE_URL=postgresql+psycopg://postgres:YOUR_PASSWORD@localhost:5432/cloudguardian
-JWT_SECRET_KEY=YOUR_SECRET_KEY
-JWT_ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=30
-```
-
-Run database migrations:
+Apply database migrations:
 
 ```powershell
 & ".\.venv\Scripts\python.exe" -m alembic upgrade head
 ```
 
-Start the application:
+Start the backend:
 
 ```powershell
 & ".\.venv\Scripts\python.exe" -m uvicorn backend.app.main:app --reload
 ```
 
-Open the dashboard at `http://127.0.0.1:8000/dashboard/` or the API documentation at `http://127.0.0.1:8000/docs`.
+Open:
 
-## API example
+- Dashboard: http://127.0.0.1:8000/dashboard/
+- API Documentation: http://127.0.0.1:8000/docs
+- Health Check: http://127.0.0.1:8000/health
 
-Metric ingestion requires a registered, active host and an Admin or Operator JWT token.
+## Run the Monitoring Agent
 
-```powershell
-$headers = @{
-    Authorization = "Bearer YOUR_ACCESS_TOKEN"
-}
+Configure the following agent variables in `.env`:
 
-Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/api/v1/metrics" `
-    -Headers $headers `
-    -ContentType "application/json" `
-    -Body '{"host_id":"server-01","cpu_percent":35,"memory_percent":40,"disk_percent":45,"latency_ms":80,"error_rate_percent":0.5,"active_connections":20,"request_rate":100,"network_rtt_ms":25}'
+```env
+CLOUDGUARDIAN_API_URL=http://127.0.0.1:8000
+CLOUDGUARDIAN_HOST_ID=YOUR_REGISTERED_HOST_ID
+AGENT_INTERVAL_SECONDS=10
+CLOUDGUARDIAN_AGENT_EMAIL=YOUR_AGENT_EMAIL
+CLOUDGUARDIAN_AGENT_PASSWORD=YOUR_AGENT_PASSWORD
 ```
 
-Useful endpoints:
+Register the host through the host management API before starting the agent.
 
-- `POST /api/v1/auth/register` - register a user
-- `POST /api/v1/auth/login` - authenticate and obtain JWT
-- `POST /api/v1/hosts` - register a host (Admin)
-- `GET /api/v1/hosts` - list registered hosts
-- `PATCH /api/v1/hosts/{host_id}` - update host details (Admin)
-- `DELETE /api/v1/hosts/{host_id}` - deactivate a host (Admin)
-- `POST /api/v1/metrics` - ingest a metric snapshot
-- `GET /api/v1/metrics` - retrieve historical metrics
-- `GET /api/v1/metrics/hosts` - show host health
-- `GET /api/v1/metrics/anomalies` - retrieve detected anomalies
+Run:
 
-## Tests
+```powershell
+& ".\.venv\Scripts\python.exe" -m agent.main
+```
+
+The agent collects system metrics periodically, stores them in a local SQLite queue, and sends pending metrics to the backend. If the backend is unavailable, metrics remain queued and are retried when connectivity is restored.
+
+## API Endpoints
+
+| Method | Endpoint                    | Description           |
+| ------ | --------------------------- | --------------------- |
+| POST   | `/api/v1/auth/register`     | Register a user       |
+| POST   | `/api/v1/auth/login`        | Authenticate a user   |
+| POST   | `/api/v1/hosts`             | Register a host       |
+| GET    | `/api/v1/hosts`             | List registered hosts |
+| GET    | `/api/v1/hosts/{host_id}`   | Get host details      |
+| PATCH  | `/api/v1/hosts/{host_id}`   | Update host           |
+| DELETE | `/api/v1/hosts/{host_id}`   | Deactivate host       |
+| POST   | `/api/v1/metrics`           | Ingest metrics        |
+| GET    | `/api/v1/metrics`           | Retrieve metrics      |
+| GET    | `/api/v1/metrics/hosts`     | Get host health       |
+| GET    | `/api/v1/metrics/anomalies` | Retrieve anomalies    |
+
+Protected endpoints require a valid JWT access token. Access permissions depend on the assigned role.
+
+## Run Tests
+
+Run the complete test suite:
 
 ```powershell
 & ".\.venv\Scripts\python.exe" -m pytest -q
 ```
 
-Current test status: **40 tests passing**.
+## Project Structure
 
-## Roadmap
+```text
+CloudGuardian/
+├── agent/
+│   ├── collectors/
+│   ├── core/
+│   └── storage/
+├── backend/
+│   └── app/
+│       ├── api/
+│       ├── core/
+│       ├── models/
+│       ├── schemas/
+│       ├── services/
+│       └── main.py
+├── frontend/
+│   └── index.html
+├── tests/
+├── alembic/
+├── requirements.txt
+└── README.md
+```
 
-- [x] PostgreSQL integration and database migrations
-- [x] JWT authentication and role-based access control
-- [x] Host management APIs
-- [x] Host-aware metric ingestion
-- [x] Threshold-based anomaly detection
-- [x] Statistical anomaly detection
-- [ ] Automated monitoring agent
-- [ ] Real-time metric collection and simulation
-- [ ] ML-based resource utilization forecasting
-- [ ] Predictive failure-risk analysis
+## Security Notes
+
+- Keep `.env`, database files, passwords, and JWT secrets out of version control.
+- Use strong, unique secrets for JWT signing.
+- Assign users only the permissions they require.
+- Keep agent credentials private.
