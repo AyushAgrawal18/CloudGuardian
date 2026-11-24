@@ -1,6 +1,7 @@
 
 import hashlib
 import re
+import threading
 from pathlib import Path
 
 from drain3 import TemplateMiner
@@ -37,6 +38,16 @@ class LogParser:
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.miners = {}
+        self.host_locks = {}
+        self.locks_guard = threading.Lock()
+
+    def get_host_lock(self, host_id: str) -> threading.Lock:
+        """Get or create a thread lock for a specific host."""
+        with self.locks_guard:
+            if host_id not in self.host_locks:
+                self.host_locks[host_id] = threading.Lock()
+
+            return self.host_locks[host_id]
 
     def _get_miner(self, host_id: str) -> TemplateMiner:
         if not host_id or not host_id.strip():

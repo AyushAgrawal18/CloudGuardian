@@ -1,4 +1,7 @@
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from backend.app.services.log_parser import (
@@ -73,3 +76,47 @@ def test_parser_restores_state_after_restart(tmp_path):
 
     assert first["cluster_id"] == second["cluster_id"]
     assert second["cluster_size"] == 2
+
+
+def test_same_host_uses_same_lock_concurrently(tmp_path):
+    from backend.app.services.log_parser import LogParser
+
+    parser = LogParser(state_dir=str(tmp_path))
+
+    lock_a = parser.get_host_lock("server-01")
+    lock_b = parser.get_host_lock("server-01")
+
+    # Both requests must receive the same lock object.
+    assert lock_a is lock_b
+
+    active_requests = 0
+    maximum_active_requests = 0
+    counter_lock = threading.Lock()
+
+    def simulate_request():
+        nonlocal active_requests, maximum_active_requests
+
+        with parser.get_host_lock("server-01"):
+            with counter_lock:
+                active_requests += 1
+                maximum_active_requests = max(
+                    maximum_active_requests,
+                    active_requests,
+                )
+
+            # Simulate work while holding the host lock.
+            threading.Event().wait(0.05)
+
+            with counter_lock:
+                active_requests -= 1
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [
+            executor.submit(simulate_request)
+            for _ in range(10)
+        ]
+
+        for future in futures:
+            future.result()
+
+    assert maximum_active_requests == 1
