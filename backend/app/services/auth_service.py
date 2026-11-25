@@ -3,7 +3,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.app.core.security import hash_password
 from backend.app.models.user import User, UserRole
 from backend.app.core.security import hash_password, verify_password
 from backend.app.schemas.auth import (
